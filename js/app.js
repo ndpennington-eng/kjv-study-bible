@@ -1,7 +1,7 @@
 /* KJV Study Bible: single-page app (no frameworks, relative paths, works offline). */
 (function(){
 "use strict";
-var APP_VERSION = "1.0.0";
+var APP_VERSION = "1.1.0";
 var D = {kjv:null, luther:null, study:null, xref:null};
 var NAMES = [], OFFS = [], TOTAL = 0;
 var $view = document.getElementById("view");
@@ -10,6 +10,7 @@ var $back = document.getElementById("backBtn");
 var $sheet = document.getElementById("sheet");
 var $scrim = document.getElementById("scrim");
 var upRoute = "#/";
+var $pill = document.getElementById("backPill"), $pillTxt = document.getElementById("backPillTxt");
 
 /* ---------- storage ---------- */
 var SKEY = "kjvsb.settings.v1", UKEY = "kjvsb.user.v1";
@@ -53,6 +54,61 @@ function setTitle(t, up){ $title.textContent = t; upRoute = up; $back.hidden = !
 function setTab(name){ Array.prototype.forEach.call(document.querySelectorAll("#tabbar a"), function(a){ a.classList.toggle("on", a.getAttribute("data-tab")===name); }); }
 $back.addEventListener("click", function(){ if(upRoute) location.hash = upRoute; });
 
+/* ---------- "back to where I was" navigation stack ----------
+   Every history entry is stamped with an index (history.state.i). Following a cross-reference, a search
+   result, or a quick jump pushes an "origin" (where you were: hash, scroll, open verse sheet) onto a stack.
+   The floating pill (or the browser / iOS back gesture) returns to the top origin exactly as it was. */
+var NKEY = "kjvsb.nav.v1";
+var nav = (function(){ try{ var v = JSON.parse(sessionStorage.getItem(NKEY)); return Array.isArray(v) ? v : []; }catch(e){ return []; } })();
+var curI = -1, curHash = null, curView = null, lastReader = null, pendingRestore = null;
+if("scrollRestoration" in history) try{ history.scrollRestoration = "manual"; }catch(e){}
+function saveNav(){ try{ sessionStorage.setItem(NKEY, JSON.stringify(nav)); }catch(e){} }
+function originLabel(o){
+  if(o.t==="search") return "Back to search results";
+  return "Back to " + refName(o.b, o.c, o.sheet ? o.v : 0);
+}
+function pushOrigin(o, useHistory){
+  o.h = o.h || location.hash || "#/";
+  o.i = useHistory === false ? null : curI;
+  var top = nav[nav.length-1];
+  if(top && top.h===o.h && top.i===o.i) nav.pop();   // never stack the same place twice
+  nav.push(o); if(nav.length>50) nav.shift(); saveNav();
+}
+function readerOrigin(){   // snapshot of the reader as it is right now
+  if(!curView || curView.t!=="reader") return null;
+  var sel = document.querySelector("#verses .v.sel"), open = !$sheet.hidden && !!sel && !!document.getElementById("xrefArea");
+  return {t:"reader", b:curView.b, c:curView.c, v: open ? +sel.getAttribute("data-v") : 0, sheet: open, y: window.scrollY, sy: open ? $sheet.scrollTop : 0};
+}
+function updatePill(){
+  var show = nav.length>0 && curView && (curView.t==="reader" || curView.t==="search");
+  if(show) $pillTxt.textContent = originLabel(nav[nav.length-1]);
+  $pill.hidden = !show; document.body.classList.toggle("has-pill", !!show);
+}
+function goBackToOrigin(){
+  var o = nav[nav.length-1]; if(!o) return;
+  if(o.i!==null && o.i!==undefined && o.i < curI){
+    var from = curI;
+    history.go(o.i - curI);
+    // safety net: if that history entry is gone (e.g. after a fresh app launch), navigate there directly
+    setTimeout(function(){ if(curI===from && nav.indexOf(o)>=0) forwardTo(o); }, 700);
+  } else forwardTo(o);
+}
+function forwardTo(o){
+  var i = nav.indexOf(o); if(i>=0) nav.splice(i,1); saveNav();
+  pendingRestore = o;
+  if(location.hash===o.h) route(); else location.hash = o.h;
+}
+document.getElementById("backPillGo").addEventListener("click", goBackToOrigin);
+document.getElementById("backPillX").addEventListener("click", function(){ nav = []; saveNav(); updatePill(); });
+function restoreScroll(y, done){
+  var n = 0;
+  (function f(){
+    window.scrollTo(0, y);
+    if(Math.abs(window.scrollY - y) > 2 && document.documentElement.scrollHeight - window.innerHeight < y && n++ < 40) return setTimeout(f, 50);
+    if(done) done();
+  })();
+}
+
 /* ---------- init ---------- */
 function init(){
   return need("kjv").then(function(k){
@@ -65,18 +121,34 @@ function init(){
 
 /* ---------- router ---------- */
 function route(){
+  // remember where the reader was before leaving it (used by quick jump)
+  if(curView && curView.t==="reader"){ var ro = readerOrigin(); if(ro){ ro.h = curHash; lastReader = ro; } }
   closeSheet(); document.getElementById("toast").hidden = true;
   var h = location.hash || "#/";
+  // stamp this history entry with an index so "back" can step to an exact entry
+  var st = history.state;
+  if(st && typeof st.i==="number") curI = st.i;
+  else { curI = curI + 1; try{ history.replaceState({i:curI}, ""); }catch(e){} }
+  curHash = h;
+  nav = nav.filter(function(o){ return o.i===null || o.i===undefined || o.i <= curI; });   // went back past these
+  var top = nav[nav.length-1];
+  if(top && top.i===curI){ nav.pop(); if(top.h===h) pendingRestore = top; }               // returned to an origin
+  saveNav();
+  var restore = pendingRestore; pendingRestore = null;
   var path = h.slice(1).split("?")[0], qs = h.indexOf("?")>=0 ? h.slice(h.indexOf("?")+1) : "";
   var params = {}; qs.split("&").forEach(function(p){ if(!p) return; var i=p.indexOf("="); params[decodeURIComponent(p.slice(0,i))]=decodeURIComponent(p.slice(i+1).replace(/\+/g," ")); });
   var seg = path.split("/").filter(Boolean);
   window.scrollTo(0,0);
+  curView = {t: seg[0]==="r" ? "reader" : seg[0]==="search" ? "search" : (seg[0]||"home")};
+  // deliberate navigation elsewhere (book list / chapter grid, Saved, More) ends the trail
+  if((seg[0]==="b" && !seg[2]) || seg[0]==="saved" || seg[0]==="more") { nav = []; saveNav(); }
+  updatePill();
   try{
     if(!seg.length) return viewHome();
     switch(seg[0]){
       case "b": if(seg[2]==="context") return viewContext(+seg[1]); if(seg[2]==="luther") return viewLuther(+seg[1]); return viewBook(+seg[1]);
-      case "r": return viewReader(+seg[1], +seg[2]||1, +seg[3]||0, +seg[4]||0);
-      case "search": return viewSearch(params.q||"", params.s||"all");
+      case "r": return viewReader(+seg[1], +seg[2]||1, +seg[3]||0, +seg[4]||0, restore);
+      case "search": return viewSearch(params.q||"", params.s||"all", restore);
       case "saved": return viewSaved(params.t||"bookmarks");
       case "more": return viewMore();
       case "prefaces": return viewPrefaces();
@@ -91,6 +163,8 @@ function route(){
   viewHome();
 }
 window.addEventListener("hashchange", route);
+// a back/forward between two entries with the same hash fires no hashchange; route it anyway
+window.addEventListener("popstate", function(e){ if(e.state && typeof e.state.i==="number" && e.state.i!==curI && (location.hash||"#/")===curHash) route(); });
 
 /* ---------- home ---------- */
 var homeTab = sessionStorage.getItem("homeTab") || "OT";
@@ -125,6 +199,7 @@ function quickGo(q){
     if(!exact || k.length<2) r = null;
   }
   if(r){
+    if(lastReader) pushOrigin(JSON.parse(JSON.stringify(lastReader)), false);  // "Back to" where you were reading
     var bk = D.kjv.books[r.b];
     if(bk.c.length===1 && r.c && !r.v && r.c>1){ r.v = r.c; r.c = 1; }  // "Jude 3"
     if(!r.c){ location.hash = "#/b/"+r.b; return; }
@@ -159,9 +234,11 @@ function viewBook(bi){
 }
 
 /* ---------- reader ---------- */
-function viewReader(bi, c, v, v2){
+function viewReader(bi, c, v, v2, restore){
   var bk = D.kjv.books[bi]; if(!bk) return viewHome();
   c = Math.min(Math.max(1,c), bk.c.length);
+  curView = {t:"reader", b:bi, c:c};
+  if(restore && (restore.t!=="reader" || restore.b!==bi || restore.c!==c)) restore = null;
   setTitle(refName(bi,c), "#/b/"+bi); setTab("home");
   settings.last = {b:bi, c:c}; saveSettings();
   var ch = bk.c[c-1];
@@ -189,7 +266,10 @@ function viewReader(bi, c, v, v2){
     var el = e.target.closest(".v"); if(!el) return;
     openVerse(bi, c, +el.getAttribute("data-v"));
   });
-  if(v){
+  if(restore){
+    var rv = restore.sheet && restore.v && restore.v<=ch.length ? restore.v : 0;
+    requestAnimationFrame(function(){ restoreScroll(restore.y||0, function(){ if(rv) openVerse(bi, c, rv, restore.sy||0); }); });
+  }else if(v){
     var last = v2 && v2>v ? Math.min(v2, ch.length) : v;
     var el = document.getElementById("v"+v);
     if(el){
@@ -221,7 +301,7 @@ function refreshVerse(bi,c,v){
   el.className = "v sel" + (user.highlights[k] ? " h-"+user.highlights[k] : "");
   el.innerHTML = '<sup>'+v+'</sup>'+verseHTML(verseText(bi,c,v)) + (user.bookmarks[k]?'<span class="mk">★</span>':'') + (user.notes[k]?'<span class="mk">✎</span>':'');
 }
-function openVerse(bi, c, v){
+function openVerse(bi, c, v, sheetY){
   var k = key(bi,c,v), t = verseText(bi,c,v);
   var s = document.querySelector(".v.sel"); if(s) s.classList.remove("sel");
   var el = document.getElementById("v"+v); if(el) el.classList.add("sel");
@@ -231,7 +311,9 @@ function openVerse(bi, c, v){
   h += '<div class="row" aria-label="Highlight">';
   colors.forEach(function(cl){ h += '<button class="swatch'+(user.highlights[k]===cl[0]?" on":"")+'" data-c="'+cl[0]+'" aria-label="'+cl[1]+' highlight" style="background:var(--hl-'+cl[0]+')"></button>'; });
   h += '<button class="btn" id="hlClear" style="flex:0 0 auto">No highlight</button></div>';
-  h += '<div id="noteArea"></div><div id="xrefArea"><h3>Cross-references</h3><div class="muted small">Loading…</div></div>';
+  h += '<div id="noteArea"></div>';
+  if(nav.length) h += '<button class="btn sheet-back" id="sheetBack" type="button">‹ '+esc(originLabel(nav[nav.length-1]))+'</button>';
+  h += '<div id="xrefArea"><h3>Cross-references</h3><div class="muted small">Loading…</div></div>';
   openSheet(h);
   document.getElementById("bmBtn").onclick = function(){
     if(user.bookmarks[k]) delete user.bookmarks[k]; else user.bookmarks[k] = {t:Date.now()};
@@ -257,6 +339,7 @@ function openVerse(bi, c, v){
   };
   document.getElementById("noteBtn").onclick = function(){ showNote(); var ta=document.getElementById("noteTxt"); if(ta) ta.focus(); };
   if(user.notes[k]) showNote();
+  var sb = document.getElementById("sheetBack"); if(sb) sb.onclick = goBackToOrigin;
   need("xref").then(function(X){
     var g = OFFS.filter(function(o){return o[1]===bi && o[2]===c;})[0][0] + v - 1;
     var s = X.x[g], area = document.getElementById("xrefArea"); if(!area) return;
@@ -270,6 +353,11 @@ function openVerse(bi, c, v){
     });
     hh += '</div><p class="small muted">Cross-references: OpenBible.info (CC BY). <a href="#/about">Details</a></p>';
     area.innerHTML = hh;
+    area.querySelector(".xref").addEventListener("click", function(e){
+      var a = e.target.closest("a"); if(!a) return;
+      var o = readerOrigin(); if(o) pushOrigin(o);
+    });
+    if(sheetY) $sheet.scrollTop = sheetY;
   }).catch(function(){ var a=document.getElementById("xrefArea"); if(a) a.innerHTML='<div class="muted small">Cross-references unavailable.</div>'; });
 }
 
@@ -287,7 +375,7 @@ function hlWords(text, words){
   var re = new RegExp("\\b(" + words.map(function(w){return w.replace(/[^a-z0-9]/g,"");}).filter(Boolean).join("|") + ")\\b", "gi");
   return h.replace(/(<[^>]+>)|([^<]+)/g, function(m, tag, txt){ return tag ? tag : txt.replace(re, "<mark>$1</mark>"); });
 }
-function viewSearch(q, scope){
+function viewSearch(q, scope, restore){
   setTitle("Search", null); setTab("search"); clearSwipe();
   var h = '<form class="searchbox" id="sf" role="search"><input id="sq" type="search" enterkeyhint="search" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="Words, “exact phrase”, or jn 3:16" value="'+esc(q)+'" aria-label="Search the Bible"><button type="submit">Search</button></form>';
   h += '<div class="seg" id="scope">' + [["all","All"],["ot","OT"],["nt","NT"]].map(function(s){return '<button data-s="'+s[0]+'" class="'+(scope===s[0]?"on":"")+'">'+s[1]+'</button>';}).join("") + '</div>';
@@ -303,11 +391,16 @@ function viewSearch(q, scope){
     b.onclick = function(){ location.hash = "#/search?q="+encodeURIComponent(document.getElementById("sq").value.trim())+"&s="+b.getAttribute("data-s"); };
   });
   if(!q){ setTimeout(function(){ var i=document.getElementById("sq"); if(i && !("ontouchstart" in window)) i.focus(); }, 50); getWorker(); return; }
-  if(lastResults && lastResults.q===q && lastResults.scope===scope){ renderResults(lastResults); return; }
+  if(restore && restore.t!=="search") restore = null;
+  document.getElementById("sres").addEventListener("click", function(e){
+    var a = e.target.closest(".results a"); if(!a) return;
+    pushOrigin({t:"search", y: window.scrollY});
+  });
+  if(lastResults && lastResults.q===q && lastResults.scope===scope){ renderResults(lastResults); if(restore) restoreScroll(restore.y||0); return; }
   var id = ++searchId, w = getWorker();
   w.onmessage = function(e){
     var m = e.data; if(m.type!=="results" || m.id!==searchId) return;
-    m.scope = scope; lastResults = m; renderResults(m);
+    m.scope = scope; lastResults = m; renderResults(m); if(restore) restoreScroll(restore.y||0);
   };
   w.postMessage({type:"search", id:id, q:q, scope:scope});
 }
@@ -575,12 +668,17 @@ init().then(route).catch(function(e){
 });
 if("serviceWorker" in navigator){
   window.addEventListener("load", function(){
-    navigator.serviceWorker.register("sw.js").then(function(reg){
-      reg.addEventListener("updatefound", function(){
-        var nw = reg.installing; if(!nw) return;
-        nw.addEventListener("statechange", function(){ if(nw.state==="installed" && navigator.serviceWorker.controller) toast("Update ready — reopen the app to use it"); });
-      });
+    var hadController = !!navigator.serviceWorker.controller;
+    // a new worker activates itself (skipWaiting + clients.claim); offer a one-tap reload to run the new code
+    navigator.serviceWorker.addEventListener("controllerchange", function(){
+      if(!hadController){ hadController = true; return; }   // first install: nothing to update
+      var u = document.getElementById("updBar"); if(u) u.hidden = false;
+    });
+    navigator.serviceWorker.register("sw.js", {updateViaCache:"none"}).then(function(reg){
+      // iOS keeps home-screen apps alive for a long time: check for a new version whenever the app comes back
+      document.addEventListener("visibilitychange", function(){ if(document.visibilityState==="visible" && navigator.onLine) reg.update().catch(function(){}); });
     }).catch(function(e){ console.warn("SW registration failed", e); });
   });
 }
+document.getElementById("updBar").addEventListener("click", function(){ location.reload(); });
 })();

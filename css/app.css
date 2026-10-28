@@ -113,3 +113,15 @@ mark{background:var(--hl-y);color:inherit;border-radius:2px}
 .verse-actions .btn{flex:1 1 30%}
 @media (min-width:700px){.verse-actions .btn{flex:1}}
 body.offline #topbar h1::after{content:" · offline";font-weight:400;opacity:.8}
+/* "back to where I was" pill */
+#backPill{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(70px + var(--bot));z-index:25;display:flex;align-items:stretch;max-width:calc(100vw - 24px - var(--l) - var(--r));background:var(--accent);color:var(--accent-fg);border-radius:999px;box-shadow:0 4px 16px rgba(0,0,0,.3);font-family:var(--sans);overflow:hidden}
+#backPill[hidden]{display:none}
+#backPillGo{display:flex;align-items:center;gap:4px;min-height:50px;padding:0 8px 0 12px;border:0;background:transparent;color:inherit;font-size:16px;font-weight:600;cursor:pointer;min-width:0}
+#backPillGo span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#backPillGo svg{width:22px;height:22px;fill:currentColor;flex:0 0 auto}
+#backPillX{flex:0 0 44px;border:0;border-left:1px solid rgba(127,127,127,.45);background:transparent;color:inherit;font-size:22px;line-height:1;cursor:pointer;opacity:.85}
+body.has-pill main{padding-bottom:96px}
+body.has-pill #toast{bottom:calc(132px + var(--bot))}
+#updBar{position:fixed;left:50%;transform:translateX(-50%);top:calc(60px + var(--top));z-index:45;border:0;border-radius:999px;padding:12px 18px;min-height:46px;background:#222;color:#fff;font-size:15px;font-weight:600;box-shadow:0 4px 14px rgba(0,0,0,.3);cursor:pointer}
+#updBar[hidden]{display:none}
+.sheet .sheet-back{width:100%;margin:6px 0 2px;color:var(--accent);font-weight:600;justify-content:flex-start}
